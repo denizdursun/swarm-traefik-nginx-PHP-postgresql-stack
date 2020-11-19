@@ -1,0 +1,142 @@
+version: '3.7'
+
+services:
+  #pdf converter service(libreoffice)
+  pdf:
+    image: pdf/libreoffice #sample image name
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+    volumes:
+      - repo:/home/edmService/edmRepo
+    networks:
+      - internal-net
+    ports:
+      - "8100:8100"
+      - "8133:8133"
+  
+  #frontend nginx web app
+  web-app:
+    image: web/nginxPHP #sample image name
+    depends_on:
+      - service
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 2
+        delay: 10s
+        order: stop-first
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.backend.loadbalancer.stickiness=true"
+        - "traefik.backend.loadbalancer.swarm=true"
+        # the backend service needs a name
+        - "traefik.backend=web-app"
+        # network is prefixed `mm_` as well
+        - "traefik.docker.network=traefik-proxy"
+        # generate a TLS cert for this domain
+        #- "traefik.entrypoints=https"
+        #- "traefik.frontend.passHostHeader=true"
+        # add your domain below here
+        - "traefik.frontend.rule=Host:ebys.deniz.com"
+        - "traefik.port=80"
+    #ports: 
+    #  - "80:80"
+    networks:
+      - internal-net
+      - traefik-proxy
+    volumes:
+      - web-session:/var/lib/php/sessions
+      - web-code:/var/www/html
+  
+  #loadbalancer
+  traefik:
+    image: traefik:1.5
+    depends_on:
+      - web-app
+    ports:
+      - "80:80"
+      # you can view the traefik's dashboard in http://localhost:8080
+      - "9000:8080"
+      - "443:443"
+    networks:
+      - traefik-proxy
+      - internal-net
+    command: >
+      --web
+      --docker
+      --docker.domain=docker.localhost
+      --docker.swarmmode
+      --docker.watch
+      --logLevel=DEBUG
+    volumes:
+      # traefik needs the docker socket in order to work properly
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      replicas: 1
+      restart_policy:
+       condition: on-failure
+  
+  #backend service
+  service:
+    image: service/glassfish4 #sample image name
+    depends_on:
+      - db
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 2
+        delay: 10s
+        order: stop-first
+      restart_policy:
+        condition: on-failure
+    ports: 
+      - "8080:8080"
+      - "4848:4848"
+    networks:
+      - internal-net
+    volumes:
+      - repo:/home/service/repo
+  
+  #postgresl db
+  db:
+    image: db/postgresql #sample image name
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    volumes:
+      - db-data:/var/lib/postgresql/data/
+    networks:
+      - internal-net
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgresql-password
+      POSTGRES_USER: postgres
+      POSTGRES_DB: test
+    secrets:
+      - postgresql-password
+    ports:
+      - "5432:5432"
+
+secrets:
+  postgresql-password:
+    file: postgresql-pass.txt
+
+volumes:
+  db-data:
+    external: true
+  repo:
+    external: true
+  web-session:
+    external: true
+  web-code:
+    external: true
+
+networks:
+  internal-net:
+    driver: overlay
+  traefik-proxy:
+    driver: overlay
+    external: true
